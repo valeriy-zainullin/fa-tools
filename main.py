@@ -1,14 +1,16 @@
 import fa_tools as fa
+import io
 
-regex = fa.Regex("(a+b)*")#b*")#+a*+a*bb*(c+dbd)*")
+regex = fa.Regex("(a+b)*b*+a*+a*bb*(c+dbd)*")
+# regex = fa.Regex("(c+dbd)***") TODO: figure out why this works.
 regex.print_ast()
 nfa = regex.make_equivalent_nfa()
+nfa.elim_eps_transitions()
+nfa = nfa.copyndelete_unvisitable()
+dfa = nfa.convert_to_dfa()
 
-from subprocess import check_output
-def fa_to_popup_graphviz(self, fa):
-	graphviz_src = fa.to_graphviz()
-	with open("graphviz_tmp.dot", 'w') as stream:
-		stream.write(graphviz_src)
-	check_output("dot -q -Tpng -ographviz_tmp.png graphviz_tmp.dot")
-	check_output("xdg-open graphviz_tmp.png")
-fa_to_popup_graphviz(nfa)
+# TODO: add 1 and 0 to regex syntax, support them in structures.
+# TODO: support reapeated stars in syntax, it means just one star.
+# TODO: implement minimization of DFA, DFA to regex.
+
+fa.fa_to_popup_graphviz(dfa)

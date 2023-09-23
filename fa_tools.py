@@ -12,10 +12,24 @@ class FA:
 	#   to internal indices. If there's no additional cost for that
 	#   or it's small enough. It's more convenient for debugging and
 	#   formation of output.
+	# If there's no transition at some point, this means the
+	#   automation rejects the input. It goes to an infinite
+	#   rejection loop, where it accepts any character of
+	#   alphabet. We don't explicitly specify alphabet,
+	#   it includes transition labels, but any other character
+	#   makes automation reject the input. If we want a format fa,
+	#   there's always a trash can vertice, that continuously
+	#   rejects anything, if automation entered that state.
+	# So the user may choose any alphabet one wants, if it
+	#   includes the characters on transitions. But the
+	#   language of automation will be the same, as it is
+	#   linked to paths from initial state to terminal states
+	#   in the automation 
 	def __init__(self, num_states, initial_state=1):
 		assert 1 <= initial_state <= num_states
 		self.transitions = [None] + [{} for i in range(num_states)]
 		self.initial_state = initial_state
+		self.in_reject_state = False
 		self.state_is_terminal = [None] + [False for i in range(num_states)]
 		# If we're an NFA, we're in a set of states at every moment.
 		self.cur_states = set([self.initial_state])
@@ -36,15 +50,11 @@ class FA:
 		self.reset()
 	def reset(self):
 		self.cur_states = set([self.initial_state])
+		self.rejects = False
 	def get_initial_state(self):
 		return self.initial_state
 	def get_terminal_states(self):
 		return [state for state in range(1, self.get_num_states()+1) if self.check_state_is_terminal(state)]
-	# Warning! Will be very expensive operation, do this only once after you're done with all operations.
-	#   Looks for an unenterable state, deletes transitions from it,
-	#   looks for other unenterable. Then creates a new nfa.
-	#def delete_unenterable_states(self):
-	#	unenterable_states
 	def get_num_states(self):
 		return len(self.transitions) - 1
 	def check_state_is_terminal(self, state):
@@ -115,34 +125,12 @@ class FA:
 			for tr_character, tr_end_states in self.transitions[tr_start_state].items():
 				for tr_end_state in tr_end_states:
 					yield (tr_start_state, tr_character, tr_end_state)
-
-	# Alphabet is enumeratable container of characters, which
-	#   is used to obtain set of all words in theory of formal
-	#   languages, FAs and regexps. If we want to obtain
-	#   a language of an automation, it must have all edges
-	#   for every character, otherwise some words may be
-	#   neither accepted, nor rejected. And all edges must
-	#   have their characters from alphabet for the automation
-	#   to be formally correct FA over the alphabet.   
-	def prepare(self, alphabet):
-		for start_state in range(1, self.get_num_states()+1):
-			for abt_character in alphabet:
-				if self.count_transitions(start_state, abt_character, None) == 0:
-					return False
-		# Now every state has transitions for every character.
-		for tr_start_state in range(1, self.get_num_states()+1):
-			for tr_character, _ in self.transitions[tr_start_state]:
-				if tr_character not in alphabet:
-					return False
-		# Now every transition character is from alphabet
-		self.alphabet_checked = True
-		return True
-
 	def transit(self, character):
-		if not self.alphabet_checked:
-			raise Exception("Not alphabet checked")
+		if self.in_reject_state:
+			return
 		if self.count_transitions(self.cur_state, character, None) == 0:
-			raise Exception("No such transition")
+			self.in_reject_state = True
+			return
 		old_states = self.cur_states
 		new_states = set()
 		for start_state in old_states:
@@ -150,20 +138,66 @@ class FA:
 		self.cur_states = old_states
 
 	def accepts(self):
+		if self.in_reject_state:
+			return False
 		for cur_state in self.cur_states:
 			if self.state_is_terminal[cur_state]:
 				return True
 		return False
 
-	def fa_to_graphviz(self):
+	def convert_to_graphviz(self, node_shape="circle", term_node_shape="doublecircle"):
 		result = []
-		result.append("graph G {")
+		result.append("digraph G {")
+		result.append("rankdir=LR;")
+		result += ["node_start [shape = point];", "node_start -> node_%d;" % self.get_initial_state()]
 		for state in range(1, self.get_num_states()+1):
-			result.append("node_%d [label=\"%d\" ];" % (state, state))
+			if self.check_state_is_terminal(state):
+				result.append("node_%d [label=\"%d\", shape=\"%s\"];" % (state, state, term_node_shape))
+			else:
+				result.append("node_%d [label=\"%d\", shape=\"%s\"];" % (state, state, node_shape))
 		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
-			result.append("node_%d -> node_%d [label=\"%s\"];" % (tr_start_state, tr_end_state, tr_character))
+			character_repr = tr_character
+			if tr_character == "":
+				character_repr = "&epsilon;"
+			result.append("node_%d -> node_%d [label=\"%s\"];" % (tr_start_state, tr_end_state, character_repr))
 		result.append("}")
-		return result.join('\n')
+		return '\n'.join(result)
+
+	# Warning! Will be very expensive operation, do this only once after you're done with all operations.
+	#   Creates a new fa, where there are no unenterable states.
+	def copyndelete_unvisitable(self, childclass):
+		visited = [None] + [False for i in range(self.get_num_states())]
+		# BFS, but all edges are of 0 weight, so we don't have to
+		#   use queue, we can take any vertice from queue, they all
+		#   have 0 distance.
+		# Or it's just resursive operation to cover all accessible states.
+		queue = set([self.initial_state])
+		while queue:
+			state = queue.pop()
+			visited[state] = True
+			for _, tr_end_states in self.transitions[state].items():
+				for tr_end_state in tr_end_states:
+					if visited[tr_end_state]:
+						continue
+					queue.add(tr_end_state)
+
+		accessible_states = sorted([i for i in range(1, self.get_num_states()+1) if visited[i]])
+		old_state_to_new_state = [None] + [None for i in range(self.get_num_states())]
+		for index, accessible_state in enumerate(accessible_states):
+			old_state_to_new_state[accessible_state] = index + 1
+		assert self.initial_state in accessible_states, "Something went wrong.." # Initial state is always accessible from itself.
+		print(len(accessible_states))
+		print(self.initial_state)
+		new_fa = childclass(len(accessible_states), old_state_to_new_state[self.initial_state])
+		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
+			if old_state_to_new_state[tr_start_state] is None or old_state_to_new_state[tr_end_state] is None:
+				continue
+			new_fa.add_transition(old_state_to_new_state[tr_start_state], tr_character, old_state_to_new_state[tr_end_state])
+		for old_state in range(1, self.get_num_states()+1):
+			if self.check_state_is_terminal(old_state) and old_state_to_new_state[old_state] is not None:
+				new_fa.toggle_state_terminality(old_state_to_new_state[old_state])
+		return new_fa
+
 
 class DFA(FA):
 	def __init__(self, *args):
@@ -171,7 +205,10 @@ class DFA(FA):
 
 	def add_transition(self, start_state, character, end_state):
 		assert self.count_transitions(start_state, character, None) == 0, "For every starting state DFA must not have a pair of transitions with the same character in order to stay definite"
-		super().add_transition(self, start_state, character, end_state)
+		super(DFA, self).add_transition(start_state, character, end_state)
+
+	def copyndelete_unvisitable(self):
+		return super(FA, self).copyndelete_unvisitable(FA)
 
 # Both with eps-edges and without,
 #   eps edges can be eliminated
@@ -182,6 +219,167 @@ class NFA(FA):
 
 	def add_transition(self, start_state, character, end_state):
 		super(NFA, self).add_transition(start_state, character, end_state)
+
+	def copyndelete_unvisitable(self):
+		return super(NFA, self).copyndelete_unvisitable(NFA)
+
+	# Warning: language of automation may change! Only elim eps transitions
+	#   should use it.
+	def _delete_eps_transitions(self):
+		for tr_start_state in range(1, self.get_num_states()+1):
+			if '' in self.transitions[tr_start_state]:
+				del self.transitions[tr_start_state]['']
+
+	# https://www.lrde.epita.fr/dload/20070523-Seminar/delmon-eps-removal-vcsn-report.pdf
+	# http://web.cecs.pdx.edu/~sheard/course/CS581/notes/NfaEpsilonDefined.pdf (main source, more concise)
+	# https://www.cs.cornell.edu/courses/cs2800/2016sp/lectures/lec35-kleene.html
+	# We want to compress paths that contain epsilon transitions by adding
+	#   some more transitions, these would be a composition of some old transitions,
+	#   and won't have eps on them (so they include a transition without eps), and
+	#   eliminating eps transitions.
+	# The first thing we do is we declare terminal vertices that have a reachable
+	#   terminal by only eps edges. It doesn't change language of automation
+	# Proof.
+	# Second step.
+	# Next thing is that we want for every path compress eps transitions in it.
+	#   Every state has a set of eps-reachable states (reachable only by eps
+	#   states), it now may now for every non-eps transition starting in this set
+	#   transit straight to the end state, avoding this clutch of eps states. We
+	#   add corresponding transitions.
+	# It won't change the language of automation.
+	#   Consider a word that was accepted previously (had a path leading to a terminal
+	#   vertice with labels concatenated equal to the word), before modifications.
+	#   If word's path is empty (as a sequence of transitions), then it leads to the
+	#   starting vertice, word is eps, but then starting vertice was terminal and it's still
+	#   terminal, we didn't do anything to it.
+	#   If word's path only has eps transitions, then it's an empty word, we deleted
+	#   those eps transitions. But before deletion starting vertice terminal, because it
+	#   has a reachable terminal using only eps transitions. So the word is accepted now,
+	#   an empty path accepts it.
+	#   If the word's path has some non-eps transitions. The first thing is that
+	#   we may eliminate eps transitions at the end of path. Because after any elimination
+	#   end is still terminal, it has an eps-transition reachable terminal (we ordered
+	#   such property before and that's the first thing we did to the automation).
+	#   Now the path end (which is terminal) is visited by a non-eps transition.
+	#   It's still a path in the automation before the second step.
+	#   Now consider the initial state. If there are transitions at the start
+	#   of path that are eps-transitions (empty labeled), we may delete them
+	#   and go straight to the first state visited by a non-eps transition.
+	#   There is a transition for that, intermediate vertices were eps-reachable
+	#   from initial. Next we compress that first visited by a non-eps transition
+	#   to reach the second visited by a non-eps transition. Repeating this step,
+	#   we'll eventually visit our terminal. Yet we have a path in our new automation!
+	# Done. Also we could delete vertices (states, I love to discuss automations in
+	#   terms of graphs, it makes them more imaginable) that don't have any
+	#   incoming transitions. They won't be visited by any words. Only eps-reachable
+	#   states will be just like this and eps-elimination. And we may have a lot of
+	#   eps transitions. 
+	def elim_eps_transitions(self):
+		# We need eps reachable states for both steps.
+		# num_states iterations will be enough: shortest path to any other
+		#   state may not need more than num_states transitions, otherwise
+		#   we have a list of num_transitions intermediate states, which is
+		#   more than num_states, so there's a state that's mentioned twice
+		#   (otherwise length is not greater than num_states - 1, Dirichlet
+		#   principle).
+		eps_reachable_states = [None] + [set([state]) | (self.transitions[state][""] if "" in self.transitions[state] else set()) for state in range(1, self.get_num_states()+1)]
+		new_eps_reachable_states = [None] + [set() for state in range(self.get_num_states())]
+		# On the first iteration, eps_reachable states are all paths reachable in one transition
+		#   new_eps_reachable states -- paths reachable in two transitions
+		# On the second, eps_reachable states are all patha reachable in not more than four transitoins.
+		iteration = 1
+		while 2 ** (iteration - 1) < self.get_num_states():
+			for state in range(1, self.get_num_states()+1):
+				new_eps_reachable_states[state] = set(new_eps_reachable_states[state])
+				for eps_reachable_state in eps_reachable_states[state]:
+					new_eps_reachable_states[state] |= eps_reachable_states[eps_reachable_state]
+			eps_reachable_states = [None] + [set(new_eps_reachable_states[i]) for i in range(1, self.get_num_states()+1)]
+			iteration += 1
+		# Step 1. Mark as terminal states that have eps-reachable terminal states.
+		for state in range(1, self.get_num_states()+1):
+			if self.check_state_is_terminal(state):
+				# Already terminal, even if we mark, it doesn't change anything
+				continue
+			for eps_reachable_state in eps_reachable_states[state]:
+				if self.check_state_is_terminal(eps_reachable_state):
+					# Found a reachable terminal
+					self.toggle_state_terminality(state)
+					break
+		# Step 2. Add "express" edges to states to shorthand moves from
+		#   eps-reachables by a non-eps transition.
+		new_transitions = set()
+		for state in range(1, self.get_num_states()):
+			for tr_start_state in eps_reachable_states[state]:
+				if tr_start_state == state:
+					# Any state is eps-reachable from itself.
+					#   We don't need to readd these transitions.
+					continue
+				for tr_character, tr_end_states in self.transitions[tr_start_state].items():
+					# Those edges we must not shorthand
+					if tr_character == '':
+						continue
+					for tr_end_state in tr_end_states:
+						new_transitions.add((state, tr_character, tr_end_state))
+		for tr_start_state, tr_character, tr_end_state in new_transitions:
+			self.add_transition(tr_start_state, tr_character, tr_end_state)
+
+		# Deleting eps transitions.
+		self._delete_eps_transitions()
+
+	# In order to convert to dfa, we should assign a set of nfa states
+	#   to a dfa state. And by a single character we transit from
+	#   one set of nfa states to another set. We're in a set of nfa
+	#   states at any moment.
+	def convert_to_dfa(self):
+		state_sets_queued = set()
+		queue = set()
+		queue.add(frozenset([self.initial_state]))
+		possible_node_sets = {frozenset([self.initial_state]): [1, set()]}
+		while queue:
+			# These statse are a ste of states in nfa we're at the moment
+			cur_states = queue.pop()
+			# [Set] = [index in new graph, indices available from]
+			cur_states_index = possible_node_sets[cur_states][0] # Index of the state in the new DFA, assigned when the state of DFA is discovered
+			# If we move by one of these, we get a set of states.
+			# If we try to move by not any of these, we get a rejected state.
+			#    It's an imaginary vertice, that continuosly rejects any
+			#    symbol of alphabet.
+			# So our dfa will also have rejecting state and transitions to
+			#   rejecting state that we won't write for the sake of simplicity.
+			joined_transitions = {}
+			for state in cur_states:
+				for character in self.transitions[state].keys():
+					if character not in joined_transitions:
+						joined_transitions[character] = set()
+					joined_transitions[character] |= self.transitions[state][character]
+			assert '' not in joined_transitions, "must not have epsilon transitions, eliminate them first with elim_eps_transitions"
+			for character in joined_transitions.keys():
+				next_states = frozenset(joined_transitions[character])
+				if next_states not in possible_node_sets:
+					possible_node_sets[next_states] = [len(possible_node_sets)+1, set()]
+				possible_node_sets[next_states][1].add((character, cur_states_index))
+				if next_states in state_sets_queued:
+					continue
+				state_sets_queued.add(next_states)
+				queue.add(next_states)
+		# Now we know, what state sets are accessible in nfa. Now we can
+		#   compress sets them into new states. A new state corresponds
+		#   to a set of vertices
+		dfa = DFA(len(possible_node_sets), 1)
+		for possible_node_set in possible_node_sets.keys():
+			index, accessible_from = possible_node_sets[possible_node_set]
+			tr_end_state = index
+			for tr_character, tr_start_state in accessible_from:
+				dfa.add_transition(tr_start_state, tr_character, tr_end_state)
+			is_terminal = False
+			for nfa_state in possible_node_set:
+				if self.check_state_is_terminal(nfa_state):
+					is_terminal = True
+					break
+			if is_terminal:
+				dfa.toggle_state_terminality(index)
+		return dfa
+
 
 class Scanner:
 	def __init__(self, string, pos=0):
@@ -197,6 +395,15 @@ class Scanner:
 		result = self.peek()
 		self.pos += 1
 		return result
+
+import subprocess
+import sys
+def fa_to_popup_graphviz(fa):
+	graphviz_src = fa.convert_to_graphviz()
+	with open("graphviz_tmp.dot", 'w') as stream:
+		stream.write(graphviz_src)
+	subprocess.check_output(["dot", "-q", "-Tpng", "-ographviz_tmp.png", "graphviz_tmp.dot"])
+	subprocess.check_output(["xdg-open", "graphviz_tmp.png"])
 
 # Syntax
 # Very similar to parsing of numeric expression. So all tutorials
@@ -271,7 +478,11 @@ class RegexSum(RegexSyntaxItem):
 
 			part_nfa_init_state = part_nfa.get_initial_state()
 			part_nfa_term_state = part_nfa.get_terminal_states()
-			assert len(part_nfa_term_state) == 1
+			try:
+				assert len(part_nfa_term_state) == 1
+			except:
+				fa_to_popup_graphviz(part_nfa)
+				raise
 			part_nfa_term_state = part_nfa_term_state[0]
 
 			state_index_shift = result_nfa.get_num_states()
@@ -280,7 +491,6 @@ class RegexSum(RegexSyntaxItem):
 			result_nfa.add_transition(state_index_shift + part_nfa_term_state, '', result_nfa_term_state)
 
 			for part_nfa_tr_start, part_nfa_tr_chr, part_nfa_tr_end in part_nfa.iterate_transitions():
-				print(part_nfa_tr_start, part_nfa_tr_chr, part_nfa_tr_end)
 				result_nfa.add_transition(state_index_shift + part_nfa_tr_start, part_nfa_tr_chr, state_index_shift + part_nfa_tr_end)
 
 		return result_nfa
@@ -305,18 +515,19 @@ class RegexProd(RegexSyntaxItem):
 		for part_index in range(1, len(self.parts)):
 			part = self.parts[part_index]
 
-			part_nfa = part.make_equivant_nfa()
+			part_nfa = part.make_equivalent_nfa()
 
-			part_nfa_init_state = rep_nfa.get_initial_state()
-			part_nfa_term_state = rep_nfa.get_terminal_states()
-			assert len(rep_nfa_term_state) == 1
-			part_nfa_term_state = rep_nfa_term_state[0]
+			part_nfa_init_state = part_nfa.get_initial_state()
+			part_nfa_term_state = part_nfa.get_terminal_states()
+			assert len(part_nfa_term_state) == 1
+			part_nfa_term_state = part_nfa_term_state[0]
 
 			state_index_shift = result_nfa.get_num_states()
 			result_nfa.add_states(part_nfa.get_num_states())
 			result_nfa.add_transition(result_nfa_term_state, '', state_index_shift + part_nfa_init_state)
 			result_nfa.toggle_state_terminality(result_nfa_term_state)
 			result_nfa.toggle_state_terminality(state_index_shift + part_nfa_term_state)
+			result_nfa_term_state = state_index_shift + part_nfa_term_state # We have a new terminal state
 
 			for part_nfa_tr_start, part_nfa_tr_chr, part_nfa_tr_end in part_nfa.iterate_transitions():
 				result_nfa.add_transition(state_index_shift + part_nfa_tr_start, part_nfa_tr_chr, state_index_shift + part_nfa_tr_end)
@@ -342,6 +553,8 @@ class RegexRep(RegexSyntaxItem):
 		rep_nfa.toggle_state_terminality(rep_nfa_term_state)
 		# Empty character (aka empty word, eps) transition
 		rep_nfa.add_transition(rep_nfa_term_state, "", rep_nfa_init_state)
+		# Old initial state is now terminal
+		rep_nfa.toggle_state_terminality(rep_nfa_init_state)
 
 		return rep_nfa
 class RegexImmChr(RegexSyntaxItem):
@@ -355,7 +568,7 @@ class RegexImmChr(RegexSyntaxItem):
 		return result
 	def make_equivalent_nfa(self):
 		result_nfa = NFA(2)
-		result_nfa.add_transition(1, 'a', 2)
+		result_nfa.add_transition(1, self.character, 2)
 		result_nfa.toggle_state_terminality(2)
 		return result_nfa
 
@@ -446,9 +659,8 @@ class Regex:
 			for special_chr in special_chrs:
 				if special_chr in alphabet:
 					raise Exception("Found a forbidden alphabet character")
-		regex_chrs = list(regex_str)
-		for special_chr in special_chrs:
-			regex_chrs.remove(special_chr)
+		regex_chrs = list(filter(lambda char: char not in special_chrs, regex_str))
+		print(regex_chrs)
 		if alphabet is None:
 			alphabet = regex_chrs
 		else:
