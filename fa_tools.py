@@ -193,6 +193,7 @@ class FA:
 			if old_state_to_new_state[tr_start_state] is None or old_state_to_new_state[tr_end_state] is None:
 				continue
 			new_fa.add_transition(old_state_to_new_state[tr_start_state], tr_character, old_state_to_new_state[tr_end_state])
+		# Do not forget to mark accessible terminal states to be terminal in the new fa. 
 		for old_state in range(1, self.get_num_states()+1):
 			if self.check_state_is_terminal(old_state) and old_state_to_new_state[old_state] is not None:
 				new_fa.toggle_state_terminality(old_state_to_new_state[old_state])
@@ -204,11 +205,125 @@ class DFA(FA):
 		super(DFA, self).__init__(*args)
 
 	def add_transition(self, start_state, character, end_state):
+		if self.count_transitions(start_state, character, end_state) > 0:
+			# An already existing transition, skipping.
+			return
 		assert self.count_transitions(start_state, character, None) == 0, "For every starting state DFA must not have a pair of transitions with the same character in order to stay definite"
 		super(DFA, self).add_transition(start_state, character, end_state)
 
 	def copyndelete_unvisitable(self):
-		return super(FA, self).copyndelete_unvisitable(FA)
+		return super(DFA, self).copyndelete_unvisitable(FA)
+
+
+	def _image_of_state_set(self, state_set, char):
+		result = set()
+		for state in state_set:
+			result |= self.transitions[state].get(char, set())
+		return result
+
+	def _preimage_of_state_set(self, state_set, char):
+		result = set()
+		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
+			if tr_end_state not in state_set:
+				continue
+			if tr_character == char:
+				result.add(tr_start_state)
+		return result
+
+	def _class_is_split_by(self, eq_class, splitter):
+		preimage = self._preimage_of_state_set(splitter[0], splitter[1])
+		intersection = frozenset(preimage & eq_class)
+		return 0 < len(intersection) < len(eq_class)
+
+	def _split_class(self, eq_class, splitter):
+		preimage = self._preimage_of_state_set(splitter[0], splitter[1])
+		intersection = frozenset(preimage & eq_class)
+		return intersection, eq_class - intersection
+
+	# Hopcroft's algorithm to minimize a DFA.
+	#   https://www.geeksforgeeks.org/minimization-of-dfa/
+	#     (seems like it's Hopcroft's algorithm down the link)
+	#   https://en.wikipedia.org/wiki/DFA_minimization
+	#   http://i.stanford.edu/pub/cstr/reports/cs/tr/71/190/CS-TR-71-190.pdf
+	#      Understood something from this source, but still not quite everything.
+	#   http://www-igm.univ-mlv.fr/~berstel/Exposes/2009-06-08MinimisationLiege.pdf
+	#      Page 26 saves the day.
+	def make_min_equiv_dfa(self):
+		# All characters that are present on edges + 'a' in case it's an automation without transitions.
+		alphabet = set().union(*map(lambda d: set(d.keys()), self.transitions[1:])) | set(('a',))
+
+		# P <- {F, F^c} (complement)
+		partition = [set(), set()]
+		for state in range(1, self.get_num_states()+1):
+			if self.check_state_is_terminal(state):
+				partition[1].add(state)
+			else:
+				partition[0].add(state)
+		if set() in partition:
+			# All of vertices were terminal, eliminate this case
+			partition.remove(set())
+		partition = set(map(frozenset, partition))
+		waiting_set = set()
+		
+		smallest_partition_item = None
+		for state_set in partition:
+			if smallest_partition_item is None or len(state_set) < len(smallest_partition_item):
+				smallest_partition_item = state_set
+		for char in alphabet:
+			waiting_set.add((smallest_partition_item, char))
+		while waiting_set:
+			# Slide 14 defines what a splitter is.
+			splitter = waiting_set.pop()
+			print("splitter =", splitter)
+			visited_eq_classes = set()
+			partition_old = set(partition)
+			for eq_class in partition_old:
+				if eq_class in visited_eq_classes:
+					continue
+				if not self._class_is_split_by(eq_class, splitter):
+					print("Doesn't split", eq_class)
+					continue
+				part1, part2 = self._split_class(eq_class, splitter)
+				print("part1 =", part1, ", ", "part2 =", part2)
+				partition.remove(eq_class)
+				partition.add(part1)
+				partition.add(part2)
+				for char in alphabet:
+					if (eq_class, char) in waiting_set:
+						waiting_set.remove((eq_class, char))
+						waiting_set.add((part1, char))
+						waiting_set.add((part2, char))
+					else:
+						smallest_part = None
+						if len(part1) <= len(part2):
+							smallest_part = part1
+						else:
+							smallest_part = part2
+						waiting_set.add((smallest_part, char))
+				visited_eq_classes.add(eq_class)
+				break
+		print("partition =", partition)
+		partition = frozenset(map(frozenset, partition))
+		eq_class_to_index = {}
+		for eq_class in partition:
+			eq_class_to_index[eq_class] = len(eq_class_to_index) + 1
+		state_to_eq_class = [None] + [None for i in range(self.get_num_states())]
+		for eq_class in partition:
+			eq_class_index = eq_class_to_index[eq_class]
+			for state in eq_class:
+				state_to_eq_class[state] = eq_class_index
+		initial_state_index = state_to_eq_class[self.initial_state]
+		new_dfa = DFA(len(partition), initial_state_index)
+		# Mark terminal states
+		for eq_class in partition:
+			for state in eq_class:
+				if self.check_state_is_terminal(state):
+					new_dfa.toggle_state_terminality(eq_class_to_index[eq_class])
+					break
+		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
+			new_dfa.add_transition(state_to_eq_class[tr_start_state], tr_character, state_to_eq_class[tr_end_state])
+		return new_dfa
+
 
 # Both with eps-edges and without,
 #   eps edges can be eliminated
@@ -289,8 +404,9 @@ class NFA(FA):
 		# On the second, eps_reachable states are all patha reachable in not more than four transitoins.
 		iteration = 1
 		while 2 ** (iteration - 1) < self.get_num_states():
+			print(iteration)
 			for state in range(1, self.get_num_states()+1):
-				new_eps_reachable_states[state] = set(new_eps_reachable_states[state])
+				new_eps_reachable_states[state] = set(eps_reachable_states[state])
 				for eps_reachable_state in eps_reachable_states[state]:
 					new_eps_reachable_states[state] |= eps_reachable_states[eps_reachable_state]
 			eps_reachable_states = [None] + [set(new_eps_reachable_states[i]) for i in range(1, self.get_num_states()+1)]
@@ -308,7 +424,7 @@ class NFA(FA):
 		# Step 2. Add "express" edges to states to shorthand moves from
 		#   eps-reachables by a non-eps transition.
 		new_transitions = set()
-		for state in range(1, self.get_num_states()):
+		for state in range(1, self.get_num_states()+1):
 			for tr_start_state in eps_reachable_states[state]:
 				if tr_start_state == state:
 					# Any state is eps-reachable from itself.
