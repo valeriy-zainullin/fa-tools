@@ -50,7 +50,7 @@ class FA:
 		self.reset()
 	def reset(self):
 		self.cur_states = set([self.initial_state])
-		self.rejects = False
+		self.in_reject_state = False
 	def get_initial_state(self):
 		return self.initial_state
 	def get_terminal_states(self):
@@ -111,10 +111,10 @@ class FA:
 
 	def delete_transition(self, start_state, character, end_state):
 		assert 1 <= start_state <= self.get_num_states()
-		assert (character, end_state) in self.transitions[start_state]
-		self.transitions[start_state].remove((character, end_state))
+		assert end_state in self.transitions[start_state].get(character, set())
+		self.transitions[start_state][character].remove(end_state)
 		self.alphabet_checked = False
-		_delete_chr_transition_set_if_empty(start_state, character)
+		self._delete_chr_transition_set_if_empty(start_state, character)
 		# This operation could make the FA accept a different set of
 		#   words. Reset the FA, scan from the start please. It's
 		#   done to avoid bugs.
@@ -128,19 +128,37 @@ class FA:
 	def transit(self, character):
 		if self.in_reject_state:
 			return
-		if self.count_transitions(self.cur_state, character, None) == 0:
-			self.in_reject_state = True
-			return
-		old_states = self.cur_states
+		old_states = set(self.cur_states)
+		# Add all eps-reachable.
+		expanded = True
+		while expanded:
+			expanded = False
+			for old_state in set(old_states):
+				additional_states = self.transitions[old_state].get('', set())
+				if not additional_states.issubset(old_states):
+					old_states |= additional_states
+					expanded = True
 		new_states = set()
 		for start_state in old_states:
-			new_states |= self.transitions[start_state][character]
-		self.cur_states = old_states
+			new_states |= self.transitions[start_state].get(character, set())
+		if not new_states:
+			self.in_reject_state = True
+		self.cur_states = new_states
 
 	def accepts(self):
 		if self.in_reject_state:
 			return False
-		for cur_state in self.cur_states:
+		old_states = set(self.cur_states)
+		# Add all eps-reachable.
+		expanded = True
+		while expanded:
+			expanded = False
+			for old_state in set(old_states):
+				additional_states = self.transitions[old_state].get('', set())
+				if not additional_states.issubset(old_states):
+					old_states |= additional_states
+					expanded = True
+		for cur_state in old_states:
 			if self.state_is_terminal[cur_state]:
 				return True
 		return False
@@ -215,11 +233,12 @@ class DFA(FA):
 		return super(DFA, self).copyndelete_unvisitable(FA)
 
 
-	def _image_of_state_set(self, state_set, char):
-		result = set()
-		for state in state_set:
-			result |= self.transitions[state].get(char, set())
-		return result
+	# Not needed in Hopcroft's algorithm.
+	#def _image_of_state_set(self, state_set, char):
+	#	result = set()
+	#	for state in state_set:
+	#		result |= self.transitions[state].get(char, set())
+	#	return result
 
 	def _preimage_of_state_set(self, state_set, char):
 		result = set()
@@ -249,6 +268,9 @@ class DFA(FA):
 	#   http://www-igm.univ-mlv.fr/~berstel/Exposes/2009-06-08MinimisationLiege.pdf
 	#      Page 26 saves the day.
 	def make_min_equiv_dfa(self):
+		# All unreachable states are equiavalent between each
+		#   other, so we'll delete them at the end.
+
 		# All characters that are present on edges + 'a' in case it's an automation without transitions.
 		alphabet = set().union(*map(lambda d: set(d.keys()), self.transitions[1:])) | set(('a',))
 
@@ -322,7 +344,7 @@ class DFA(FA):
 					break
 		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
 			new_dfa.add_transition(state_to_eq_class[tr_start_state], tr_character, state_to_eq_class[tr_end_state])
-		return new_dfa
+		return new_dfa.copyndelete_unvisitable() # Delete unvisitable vertice class
 
 
 # Both with eps-edges and without,
@@ -514,7 +536,7 @@ class Scanner:
 
 import subprocess
 import sys
-def fa_to_popup_graphviz(fa):
+def fa_to_popup_graphviz(fa): # pragma: no cover
 	graphviz_src = fa.convert_to_graphviz()
 	with open("graphviz_tmp.dot", 'w') as stream:
 		stream.write(graphviz_src)
@@ -553,7 +575,7 @@ def fa_to_popup_graphviz(fa):
 #     #   can't be without a left hand side. After that plus is always consumed
 #     #   in regex sum and if we have a plus here, it means, a plus was empty.
 #   RegexSum   = RegexProd {'+' RegexProd}
-#   RegexGroup       = '(' (RegexGroup | RegexSum) ')'
+#   RegexGroup       = '(' RegexSum ')'
 #   RegexGroupRepOpt = RegexGroup ['*']
 #   Regex            = RegexSum
 # (a + b)* b* + a* + a*bb*(c+dbd)*
@@ -594,11 +616,13 @@ class RegexSum(RegexSyntaxItem):
 
 			part_nfa_init_state = part_nfa.get_initial_state()
 			part_nfa_term_state = part_nfa.get_terminal_states()
-			try:
-				assert len(part_nfa_term_state) == 1
-			except:
-				fa_to_popup_graphviz(part_nfa)
-				raise
+			assert len(part_nfa_term_state) == 1
+			# Will never happen, so no point having this in coverage
+			#try:
+			#	assert len(part_nfa_term_state) == 1
+			#except:
+			#	fa_to_popup_graphviz(part_nfa)
+			#	raise
 			part_nfa_term_state = part_nfa_term_state[0]
 
 			state_index_shift = result_nfa.get_num_states()
@@ -738,15 +762,9 @@ def parse_regex_group(scanner):
 	result = None
 	if scanner.read() != '(':
 		raise InvalidRegexSyntaxException(scanner)
-	if scanner.peek() == '(':
-		result = parse_regex_group(scanner)
-	else:
-		result = parse_regex_sum(scanner)
+	result = parse_regex_sum(scanner)
 	if scanner.read() != ')':
 		raise InvalidRegexSyntaxException(scanner)
-	if scanner.peek() == '*':
-		scanner.read()
-		result = RegexRep(result)
 	return result
 
 def parse_regex_group_rep_opt(scanner):

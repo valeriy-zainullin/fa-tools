@@ -1,3 +1,5 @@
+#!/bin/bash
+
 import fa_tools as fa
 import io
 
@@ -16,3 +18,7 @@ min_dfa = dfa.make_min_equiv_dfa()
 # TODO: implement minimization of DFA, DFA to regex.
 
 fa.fa_to_popup_graphviz(min_dfa)
+
+dfa = fa.DFA(4)
+dfa.toggle_state_terminality(1)
+fa.fa_to_popup_graphviz(dfa.make_min_equiv_dfa())
