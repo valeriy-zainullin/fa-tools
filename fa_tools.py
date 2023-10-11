@@ -232,6 +232,22 @@ class DFA(FA):
 	def copyndelete_unvisitable(self):
 		return super(DFA, self).copyndelete_unvisitable(FA)
 
+	def convert_to_full_dfa(self, alphabet):
+		has_not_full_states = False
+		transitions_to_add = set()
+		for state in range(1, self.get_num_states()+1):
+			for char in alphabet:
+				if self.count_transitions(state, char, None) == 0:
+					has_not_full_states = True
+					transitions_to_add.add((state, char, self.get_num_states()+1))
+					print(self.get_num_states())
+		if has_not_full_states:
+			self.add_states(1)
+			for transition in transitions_to_add:
+				self.add_transition(*transition)
+			for char in alphabet:
+				self.add_transition(self.get_num_states(),char,self.get_num_states())
+
 
 	# Not needed in Hopcroft's algorithm.
 	#def _image_of_state_set(self, state_set, char):
@@ -275,75 +291,159 @@ class DFA(FA):
 		alphabet = set().union(*map(lambda d: set(d.keys()), self.transitions[1:])) | set(('a',))
 
 		# P <- {F, F^c} (complement)
+		# We call vertices indistinguishible,
+		#   if all words that could lead to
+		#   a terminal concide for them.
+		#   So for a word they lead and don't
+		#   lead to terminal vertices
+		#   equiavalently (always both true
+		#   or both false). This means that
+		#   those vertices can be joined into
+		#   just one, because we'll enter their
+		#   union, then it doesn't matted what
+		#   vertice exactly would be reached
+		#   in the original DFA. Word reaches
+		#   and doesn't reach terminals no matter
+		#   what vertice it was.
+		# If we unify all such vertices, the DFA
+		#   becomes minimal (has minimum number
+		#   of vertices). We should prove that,
+		#   but I'll leave that for the exam.
+		# After this process, why our FA is still
+		#   a DFA? May we have two edges from the
+		#   same vertices with the same character
+		#   on them? Then those edges lead to different
+		#   equivalence classes,
+		#   in our equivalence class we had two
+		#   vertices that are distinguishible (they
+		#   lead to distinguishible sets, we'll see
+		#   that in a moment). So if our algorithm
+		#   is written correcly, compression of
+		#   vertices to equivalence class may not
+		#   have indeterminacy.
+		# Our indistinguishability is an equivalence
+		#   relation over states: if relexivity is
+		#   immediate (as a leads to a terminal for w
+		#   and a leads to a terminal for w is always
+		#   both true or both false),
+		#   simmetricity is also true, inherited from
+		#   logical conjuction (
+		#     (for every w in a set (any fixed set) a leads to a terminal for w
+		#      and b leads to a terminal for w)
+		#    is the same as
+		#     (for every w in a set (any fixed set) b leads to a terminal for w
+		#      and a leads to a terminal for w),
+		#      because conjuction is commutative),
+		#    transitivity is also there (for every w in set a is terminal <=> b
+		#      is terminal, b is terminal <=> c is terminal, hence a is
+		#      terminal <=> c is terminal)
+		# We have stages. At first, we have equivalence
+		#   classes of indistinguishible vertices
+		#   for every word of length zero. Our fixed set
+		#   from above is an empty word. Those are
+		#   terminal and non-terminal vertices.
+		#   Then we have steps. On every step for
+		#   every vertice we make a vector of equivalence
+		#   classes it goes to for every alphabet character.
+		#   For every word of length step (steps are 1-indexed)
+		#   vertices are distinguishible iff they visit the
+		#   same vector of vertices. Feels like a suffix
+		#   array construction in O(n log(n)) (we have
+		#   equicalence classes of two halves of cycled left
+		#   shifts). If for every character they lead
+		#   to equivalent vertices, then for every word
+		#   they lead to the same class, terminal for this
+		#   word at the same time. If there is a character
+		#   that makes them lead to different equivalence
+		#   classes, there are no two vertices there are equivalent
+		#   there (otherwise, it's the same class by transitivity),
+		#   hence exists word for the vertices that reaches a terminal
+		#   in one class and doesn't reach in another, if we prepend
+		#   the character, we get a word that distinguishes vertices.
+
 		partition = [set(), set()]
+		state_to_eq_class = {}
 		for state in range(1, self.get_num_states()+1):
 			if self.check_state_is_terminal(state):
 				partition[1].add(state)
+				state_to_eq_class[state] = 1
 			else:
 				partition[0].add(state)
+				state_to_eq_class[state] = 0
 		if set() in partition:
-			# All of vertices were terminal, eliminate this case
+			# All of vertices were terminal, we'll have just one vertice.
 			partition.remove(set())
-		partition = set(map(frozenset, partition))
-		waiting_set = set()
-		
-		smallest_partition_item = None
-		for state_set in partition:
-			if smallest_partition_item is None or len(state_set) < len(smallest_partition_item):
-				smallest_partition_item = state_set
-		for char in alphabet:
-			waiting_set.add((smallest_partition_item, char))
-		while waiting_set:
-			# Slide 14 defines what a splitter is.
-			splitter = waiting_set.pop()
-			print("splitter =", splitter)
-			visited_eq_classes = set()
-			partition_old = set(partition)
-			for eq_class in partition_old:
-				if eq_class in visited_eq_classes:
-					continue
-				if not self._class_is_split_by(eq_class, splitter):
-					print("Doesn't split", eq_class)
-					continue
-				part1, part2 = self._split_class(eq_class, splitter)
-				print("part1 =", part1, ", ", "part2 =", part2)
-				partition.remove(eq_class)
-				partition.add(part1)
-				partition.add(part2)
-				for char in alphabet:
-					if (eq_class, char) in waiting_set:
-						waiting_set.remove((eq_class, char))
-						waiting_set.add((part1, char))
-						waiting_set.add((part2, char))
-					else:
-						smallest_part = None
-						if len(part1) <= len(part2):
-							smallest_part = part1
-						else:
-							smallest_part = part2
-						waiting_set.add((smallest_part, char))
-				visited_eq_classes.add(eq_class)
+
+		while True:
+			splitted = False
+			partition_new = []
+			state_to_eq_class_new = [None] + [None for i in range(self.get_num_states())]
+			for eq_class in partition:
+				# eq class is a set, not ordered.
+				#   we need to enumerate items in a
+				#   specific order, fix some numbering.
+				#   So we convert it to a list.
+				eq_class_as_list = list(eq_class)
+				dst = [[0 for _ in range(len(alphabet))] for _ in range(len(eq_class_as_list))]
+				for item_index, state in enumerate(eq_class_as_list):
+					for char_index, char in enumerate(alphabet):
+						assert len(self.transitions[state][char]) != 0, "Not a full DFA"
+						assert len(self.transitions[state][char]) <= 1, "Not a DFA"
+						tr_end_state = min(self.transitions[state][char])
+						dst[item_index][char_index] = state_to_eq_class[tr_end_state]
+				# set(map(tuple, dst)) converts to a set of tuples (vector of eq classes
+				#   was a list, now a tuple to be hashable).
+				# Then we convert vectors back from tuples to lists with
+				#   map(list, set(map(tuple, dst))).
+				# Then we create a list of these items, so that they are
+				#   now indexed. This essentially deletes copies
+				#   and makes items arbitary ordered.
+				# You can see this for yourself with prints.
+				#   v0 = dst
+				#   print("v0 =", v0)
+				#   v1 = set(map(tuple, dst))
+				#   print("v1 =", v1)
+				#   v1 = list(map(list, v2))
+				#   print("v2 =", v2)
+				dst_deduplicated = list(map(list, set(map(tuple, dst))))
+				if len(dst_deduplicated) > 1:
+					num_sub_eq_classes = len(dst_deduplicated)
+					partition_new_old_size = len(partition_new)
+					partition_new += [set() for i in range(len(dst_deduplicated))]
+					splitted = True
+					for item_index, state in enumerate(eq_class_as_list):
+						partition_new_eq_class = partition_new_old_size + dst_deduplicated.index(dst[item_index])
+						partition_new[partition_new_eq_class].add(state)
+						state_to_eq_class_new[state] = partition_new_eq_class
+				else:
+					partition_new.append(eq_class)
+					for state in eq_class:
+						state_to_eq_class_new[state] = len(partition_new) - 1
+			partition = partition_new
+			state_to_eq_class = state_to_eq_class_new
+			if not splitted:
 				break
-		print("partition =", partition)
-		partition = frozenset(map(frozenset, partition))
-		eq_class_to_index = {}
-		for eq_class in partition:
-			eq_class_to_index[eq_class] = len(eq_class_to_index) + 1
-		state_to_eq_class = [None] + [None for i in range(self.get_num_states())]
-		for eq_class in partition:
-			eq_class_index = eq_class_to_index[eq_class]
-			for state in eq_class:
-				state_to_eq_class[state] = eq_class_index
-		initial_state_index = state_to_eq_class[self.initial_state]
+		
+		# eq_classes are zero_indexed, need to add 1 to get eq_class state index.
+		initial_state_index = state_to_eq_class[self.initial_state] + 1
 		new_dfa = DFA(len(partition), initial_state_index)
 		# Mark terminal states
 		for eq_class in partition:
 			for state in eq_class:
 				if self.check_state_is_terminal(state):
-					new_dfa.toggle_state_terminality(eq_class_to_index[eq_class])
+					# state_to_eq_class is just index of eq_class
+					#   We could use enumerate(partition) and store
+					#   eq_class_index, use it instead. Just to not
+					#   make more variable.. I hope it's obvious,
+					#   otherwise we can change this.
+					new_dfa.toggle_state_terminality(state_to_eq_class[state] + 1)
 					break
+		print(state_to_eq_class)
 		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
-			new_dfa.add_transition(state_to_eq_class[tr_start_state], tr_character, state_to_eq_class[tr_end_state])
+			transition = (state_to_eq_class[tr_start_state]+1, tr_character, state_to_eq_class[tr_end_state]+1)
+			print(transition)
+			if new_dfa.count_transitions(*transition) == 0:
+				new_dfa.add_transition(*transition)
 		return new_dfa.copyndelete_unvisitable() # Delete unvisitable vertice class
 
 
@@ -566,6 +666,8 @@ def fa_to_popup_graphviz(fa): # pragma: no cover
 #   RegexImmChr = any chr of alphabet (not None, it's absence of chrs)
 #     that is not special for regex syntax. We don't have to check
 #     it's from alphabet if it's just not special chr, it's already there.
+#     Also not character '1', it's reserved for empty word.
+#   RegexEmptyWordCharRepOpt = '1' ['*']
 #   RegexChrRepOpt = RegexImmChr ['*']
 #     # We can repeat a chr or a group, that's it, neither a sum nor a product.
 #     # '*' is always related to the previous basic syntax item.
@@ -700,7 +802,7 @@ class RegexRep(RegexSyntaxItem):
 class RegexImmChr(RegexSyntaxItem):
 	# Immediate character
 	def __init__(self, character):
-		if character in ('*', '(', ')', '+'):
+		if character in ('*', '(', ')', '+', '1'):
 			raise Exception("Invalid character")
 		self.character = character
 	def format_as_text_tree(self, indent=0):
@@ -711,6 +813,21 @@ class RegexImmChr(RegexSyntaxItem):
 		result_nfa.add_transition(1, self.character, 2)
 		result_nfa.toggle_state_terminality(2)
 		return result_nfa
+class RegexEmptyWordChr(RegexSyntaxItem):
+	# character 1 in regex
+	def __init__(self, character):
+		if character in ('*', '(', ')', '+', '1'):
+			raise Exception("Invalid character")
+		self.character = character
+	def format_as_text_tree(self, indent=0):
+		result = ' ' * indent + "RegexEmptyWordChr" + '\n'
+		return result
+	def make_equivalent_nfa(self):
+		result_nfa = NFA(2)
+		result_nfa.add_transition(1, '', 2)
+		result_nfa.toggle_state_terminality(2)
+		return result_nfa
+
 
 
 class InvalidRegexSyntaxException(Exception):
