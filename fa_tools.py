@@ -25,7 +25,7 @@ class FA:
 	#   language of automation will be the same, as it is
 	#   linked to paths from initial state to terminal states
 	#   in the automation 
-	def __init__(self, num_states, initial_state=1):
+	def __init__(self, num_states, initial_state=1, force_multichar_labels=False):
 		assert 1 <= initial_state <= num_states
 		self.transitions = [None] + [{} for i in range(num_states)]
 		self.initial_state = initial_state
@@ -43,12 +43,28 @@ class FA:
 		#   one will have to deal with that oneself. It's
 		#   done with care for the user.
 		self.alphabet_checked = False
+		# This field makes the automation disallow transition and
+		#   accept function, while still permitting to add and
+		#   delete edges, to print automation to graphviz.
+		#   It's used for dfa to regex conversion, where we have
+		#   regular expressions as labels. Also, with this field
+		#   we don't think that automation is a correct one
+		#   (fits into the definition of automata), as it may
+		#   have regular expressions on edges. But it's just a
+		#   graph then, with specific propertis applicable to
+		#   vertices (states).
+		self.force_multichar_labels = force_multichar_labels
 	def add_states(self, num_new_states):
 		self.transitions += [{} for i in range(num_new_states)]
 		self.state_is_terminal += [False for i in range(num_new_states)]
 		self.alphabet_checked = False
 		self.reset()
 	def reset(self):
+		# We can reset as many times as we want in multichar mode,
+		#   it doesn't do anything, as it's not allow to move or
+		#   do any mutating operation apart from transition
+		#   modification, addinng vertices, dumping graph as
+		#   graphviz 
 		self.cur_states = set([self.initial_state])
 		self.in_reject_state = False
 	def get_initial_state(self):
@@ -60,7 +76,7 @@ class FA:
 	def check_state_is_terminal(self, state):
 		assert 1 <= state <= self.get_num_states()
 		return self.state_is_terminal[state]
-	def toggle_state_terminality(self, state):
+	def toggle_terminality(self, state):
 		assert 1 <= state <= self.get_num_states()
 		self.state_is_terminal[state] = not self.state_is_terminal[state]
 		# This operation could make the FA accept a different set of
@@ -75,7 +91,7 @@ class FA:
 		if len(self.transitions[state][character]) == 0:
 			del self.transitions[state][character]
 	def add_transition(self, start_state, character, end_state):
-		assert len(character) <= 1
+		assert len(character) <= 1 or self.force_multichar_labels
 		assert 1 <= start_state <= self.get_num_states()
 		assert 1 <= end_state   <= self.get_num_states()
 		# We shouldn't disallow that, it's useful for nfa generation.
@@ -126,6 +142,7 @@ class FA:
 				for tr_end_state in tr_end_states:
 					yield (tr_start_state, tr_character, tr_end_state)
 	def transit(self, character):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		if self.in_reject_state:
 			return
 		old_states = set(self.cur_states)
@@ -146,6 +163,7 @@ class FA:
 		self.cur_states = new_states
 
 	def accepts(self):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		if self.in_reject_state:
 			return False
 		old_states = set(self.cur_states)
@@ -184,6 +202,7 @@ class FA:
 	# Warning! Will be very expensive operation, do this only once after you're done with all operations.
 	#   Creates a new fa, where there are no unenterable states.
 	def copyndelete_unvisitable(self, childclass):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		visited = [None] + [False for i in range(self.get_num_states())]
 		# BFS, but all edges are of 0 weight, so we don't have to
 		#   use queue, we can take any vertice from queue, they all
@@ -214,7 +233,7 @@ class FA:
 		# Do not forget to mark accessible terminal states to be terminal in the new fa. 
 		for old_state in range(1, self.get_num_states()+1):
 			if self.check_state_is_terminal(old_state) and old_state_to_new_state[old_state] is not None:
-				new_fa.toggle_state_terminality(old_state_to_new_state[old_state])
+				new_fa.toggle_terminality(old_state_to_new_state[old_state])
 		return new_fa
 
 
@@ -230,9 +249,75 @@ class DFA(FA):
 		super(DFA, self).add_transition(start_state, character, end_state)
 
 	def copyndelete_unvisitable(self):
-		return super(DFA, self).copyndelete_unvisitable(FA)
+		return super(DFA, self).copyndelete_unvisitable(DFA)
+
+	def make_full_dfa(self, alphabet):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
+		for _, tr_character, _ in self.iterate_transitions():
+			assert tr_character in alphabet, "alphabet is invalid"
+		has_not_full_states = False
+		transitions_to_add = set()
+		for state in range(1, self.get_num_states()+1):
+			for char in alphabet:
+				if self.count_transitions(state, char, None) == 0:
+					has_not_full_states = True
+					transitions_to_add.add((state, char, self.get_num_states()+1))
+		result = DFA(self.get_num_states(), self.get_initial_state())
+		if has_not_full_states:
+			result.add_states(1)
+			for transition in transitions_to_add | set(self.iterate_transitions()):
+				result.add_transition(*transition)
+			for char in alphabet:
+				result.add_transition(result.get_num_states(), char, result.get_num_states())
+			for terminal_state in self.get_terminal_states():
+				assert not result.check_state_is_terminal(terminal_state)
+				# We expect to iterate over each terminal once. Then it's
+				#   not set as terminal, as it is initially.
+				result.toggle_terminality(terminal_state)
+		return result
+
+	# Creates a new dfa and deletes "rejectors" (I'll call them like this):
+	#   vertices, that lead to itself for every character, that are not terminals,
+	#   except the starting vertice.
+	#   Used in conversion to regex to reduce number of edges. Otherwise
+	#   for regex a in alphabet ab, after conversion to dfa and back,
+	#   we get a huge string. Because of fullness.
+	def make_nonfull_dfa(self):
+		alphabet = set([tr_character for _, tr_character, _ in self.iterate_transitions()])
+
+		deleted_states = set()
+		for state in range(1, self.get_num_states()+1):
+			if self.check_state_is_terminal(state):
+				continue
+			if self.get_initial_state() == state:
+				continue
+			if self.count_transitions(state, None, None) == self.count_transitions(state, None, state):
+				# All transitions from this vertice lead to itself.
+				deleted_states.add(state)
+		state_to_new_index = [None] + list(range(1,self.get_num_states()+1))
+		# O(n^2) calculating shifts of indexes after deletion of some items.
+		#   Can be done in O(n), but that's not the goal right now, it's fine
+		#   like this for our purposes.
+		for deleted_state in deleted_states:
+			for state in range(deleted_state + 1, self.get_num_states()+1):
+				state_to_new_index[state] -= 1
+			state_to_new_index[deleted_state] = None
+		result = DFA(self.get_num_states() - len(deleted_states), state_to_new_index[self.get_initial_state()])
+		for terminal_state in self.get_terminal_states():
+			# We iterate each terminal state only once, so it should be not terminal, as it was after the dfa was created.
+			print("terminal_states =", self.get_terminal_states())
+			print("state_to_new_index =", state_to_new_index)
+			assert not result.check_state_is_terminal(state_to_new_index[terminal_state])
+			result.toggle_terminality(state_to_new_index[terminal_state])
+		for transition in self.iterate_transitions():
+			if transition[0] in deleted_states or transition[2] in deleted_states:
+				continue
+			result.add_transition(state_to_new_index[transition[0]], transition[1], state_to_new_index[transition[2]])
+		return result
+
 
 	def convert_to_full_dfa(self, alphabet):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		has_not_full_states = False
 		transitions_to_add = set()
 		for state in range(1, self.get_num_states()+1):
@@ -248,33 +333,6 @@ class DFA(FA):
 			for char in alphabet:
 				self.add_transition(self.get_num_states(),char,self.get_num_states())
 
-
-	# Not needed in Hopcroft's algorithm.
-	#def _image_of_state_set(self, state_set, char):
-	#	result = set()
-	#	for state in state_set:
-	#		result |= self.transitions[state].get(char, set())
-	#	return result
-
-	def _preimage_of_state_set(self, state_set, char):
-		result = set()
-		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
-			if tr_end_state not in state_set:
-				continue
-			if tr_character == char:
-				result.add(tr_start_state)
-		return result
-
-	def _class_is_split_by(self, eq_class, splitter):
-		preimage = self._preimage_of_state_set(splitter[0], splitter[1])
-		intersection = frozenset(preimage & eq_class)
-		return 0 < len(intersection) < len(eq_class)
-
-	def _split_class(self, eq_class, splitter):
-		preimage = self._preimage_of_state_set(splitter[0], splitter[1])
-		intersection = frozenset(preimage & eq_class)
-		return intersection, eq_class - intersection
-
 	# Hopcroft's algorithm to minimize a DFA.
 	#   https://www.geeksforgeeks.org/minimization-of-dfa/
 	#     (seems like it's Hopcroft's algorithm down the link)
@@ -283,7 +341,9 @@ class DFA(FA):
 	#      Understood something from this source, but still not quite everything.
 	#   http://www-igm.univ-mlv.fr/~berstel/Exposes/2009-06-08MinimisationLiege.pdf
 	#      Page 26 saves the day.
-	def make_min_equiv_dfa(self):
+	def make_min_fdfa(self):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
+
 		# All unreachable states are equiavalent between each
 		#   other, so we'll delete them at the end.
 
@@ -436,7 +496,7 @@ class DFA(FA):
 					#   eq_class_index, use it instead. Just to not
 					#   make more variable.. I hope it's obvious,
 					#   otherwise we can change this.
-					new_dfa.toggle_state_terminality(state_to_eq_class[state] + 1)
+					new_dfa.toggle_terminality(state_to_eq_class[state] + 1)
 					break
 		print(state_to_eq_class)
 		for tr_start_state, tr_character, tr_end_state in self.iterate_transitions():
@@ -446,6 +506,102 @@ class DFA(FA):
 				new_dfa.add_transition(*transition)
 		return new_dfa.copyndelete_unvisitable() # Delete unvisitable vertice class
 
+	def _debug_make_regex_str(self, transitions, num_states, initial_state, terminal_states): # pragma: no cover
+		fa = FA(num_states, initial_state, force_multichar_labels=True)
+		for state in set(terminal_states): # Delete copies before hand
+			fa.toggle_terminality(state)
+		for transition in transitions:
+			fa.add_transition(*transition)
+		# Also, comment assert that character length is not more than one
+		fa_to_popup_graphviz(fa)
+
+	def _make_regex_str_for_nonfull(self, empty_word_chr):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
+
+		transitions = set(self.iterate_transitions())
+		num_deleted_states = self.get_num_states()-1 # At the end only one the initial vertice.
+		deleted = [None] + [False for i in range(1, self.get_num_states()+1)]
+		result_regex_sum = set()
+		for step in range(num_deleted_states):
+			# self._debug_make_regex_str(transitions, self.get_num_states(), self.get_initial_state(), self.get_terminal_states())
+			state = None
+			for i in range(1,self.get_num_states()+1):
+				if not self.check_state_is_terminal(i) and self.get_initial_state() != i and not deleted[i]:
+					state = i
+					break
+			if state is None:
+				# All non-terminal were already deleted.
+				#   there is at least one terminal vertice that has
+				#   an edge to it. Otherwise all terminals are
+				#   unreachable and we deleted those vertices
+				#   beforehand in make_regex_str.
+				# Search once again, now allow terminals,
+				#   that have an edge from the initial.
+				for tr_start_state, _, tr_end_state in transitions:
+					if not deleted[tr_end_state] and tr_start_state == self.get_initial_state() and self.check_state_is_terminal(tr_end_state):
+						state = tr_end_state
+						break
+				assert state is not None
+			incoming_transitions  = set(tr for tr in transitions if tr[2] == state)
+			outcoming_transitions = set(tr for tr in transitions if tr[0] == state)
+			# loopbacks contains regular expressions
+			loopbacks = set(filter(lambda tr: tr[0] == tr[2] == state, incoming_transitions | outcoming_transitions))
+			incoming_transitions  -= loopbacks
+			outcoming_transitions -= loopbacks
+			loopback_regex = '(' + '+'.join(map(lambda tr: tr[1], loopbacks)) + ')'
+			if self.check_state_is_terminal(state):
+				added_regex_prod = []
+				if incoming_transitions:
+					added_regex_prod.append('(' + '+'.join(map(lambda tr: tr[1], incoming_transitions)) + ')')
+				if loopbacks:
+					added_regex_prod.append(loopback_regex + '*')
+				print("state = {}, added_regex_prod = {}".format(state, added_regex_prod))
+				result_regex_sum.add(''.join(added_regex_prod))
+			print(transitions)
+			for in_tr in incoming_transitions:
+				for out_tr in outcoming_transitions:
+					if loopbacks:
+						transitions.add((in_tr[0], in_tr[1] + loopback_regex + '*' + out_tr[1], out_tr[2]))
+					else:
+						transitions.add((in_tr[0], '(' + in_tr[1] + out_tr[1] + ')', out_tr[2]))
+			transitions -= incoming_transitions | outcoming_transitions | loopbacks
+			print(transitions)
+			# self._debug_make_regex_str(transitions, self.get_num_states(), self.get_initial_state(), self.get_terminal_states())
+			deleted[state] = True
+			print("result_regex_sum =", result_regex_sum)
+		# self._debug_make_regex_str(transitions, self.get_num_states(), self.get_initial_state(), self.get_terminal_states())
+		# Right now in result_regex_sum we have routes, that lead from initial
+		#   to some terminal without cycling back into the initial.
+		# Compress all routes that lead from initial to initial and enter
+		#   a terminal vertice through there. If initial is terminal, add empty word.
+		if self.check_state_is_terminal(self.initial_state):
+			result_regex_sum.add(empty_word_chr)
+		result = []
+		if transitions:
+			for tr_start_state, _, tr_end_state in transitions:
+				assert tr_start_state == tr_end_state
+			result.append('(' + '+'.join(map(lambda tr: tr[1], transitions)) + ")*")
+		if result_regex_sum:
+			result.append('(' + '+'.join(result_regex_sum) + ')')
+		if not result:
+			result.append(empty_word_chr)
+		return ''.join(result)
+
+	def make_regex_str(self, empty_word_chr='1'):
+		# Delete edges to rejectors,
+		#   so that regex is easier
+		#   to comprehend. Full dfa
+		#   makes the regex unecessarily
+		#   complicated.
+		# For example, we can check
+		#   regex a in alphabet ab. A
+		#   long string will come out.
+		# Also delete unreachable
+		#   vertices, needed for
+		#   correctness.
+		assert len(empty_word_chr) > 0
+		assert self.count_transitions(None, empty_word_chr, None) == 0, "empty word character mustn't occur in transition labels, use a different empty word chr"
+		return self.make_nonfull_dfa().copyndelete_unvisitable()._make_regex_str_for_nonfull(empty_word_chr)
 
 # Both with eps-edges and without,
 #   eps edges can be eliminated
@@ -463,6 +619,7 @@ class NFA(FA):
 	# Warning: language of automation may change! Only elim eps transitions
 	#   should use it.
 	def _delete_eps_transitions(self):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		for tr_start_state in range(1, self.get_num_states()+1):
 			if '' in self.transitions[tr_start_state]:
 				del self.transitions[tr_start_state]['']
@@ -512,6 +669,8 @@ class NFA(FA):
 	#   states will be just like this and eps-elimination. And we may have a lot of
 	#   eps transitions. 
 	def elim_eps_transitions(self):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
+
 		# We need eps reachable states for both steps.
 		# num_states iterations will be enough: shortest path to any other
 		#   state may not need more than num_states transitions, otherwise
@@ -541,7 +700,7 @@ class NFA(FA):
 			for eps_reachable_state in eps_reachable_states[state]:
 				if self.check_state_is_terminal(eps_reachable_state):
 					# Found a reachable terminal
-					self.toggle_state_terminality(state)
+					self.toggle_terminality(state)
 					break
 		# Step 2. Add "express" edges to states to shorthand moves from
 		#   eps-reachables by a non-eps transition.
@@ -568,7 +727,9 @@ class NFA(FA):
 	#   to a dfa state. And by a single character we transit from
 	#   one set of nfa states to another set. We're in a set of nfa
 	#   states at any moment.
-	def convert_to_dfa(self):
+	def make_dfa(self):
+		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
+
 		state_sets_queued = set()
 		queue = set()
 		queue.add(frozenset([self.initial_state]))
@@ -615,7 +776,7 @@ class NFA(FA):
 					is_terminal = True
 					break
 			if is_terminal:
-				dfa.toggle_state_terminality(index)
+				dfa.toggle_terminality(index)
 		return dfa
 
 
@@ -695,7 +856,9 @@ def fa_to_popup_graphviz(fa): # pragma: no cover
 #         RegexGroupRepOpt (c+dbd)*
 
 class RegexSyntaxItem:
-	pass
+	@classmethod
+	def get_priority(self):
+		return 0
 class RegexSum(RegexSyntaxItem):
 	# 4th (lowest) priority operation, parsed first
 	# part1 + part2 + .. + partN
@@ -707,14 +870,14 @@ class RegexSum(RegexSyntaxItem):
 		for part in self.parts:
 			result += part.format_as_text_tree(indent + 1)
 		return result
-	def make_equivalent_nfa(self):
+	def make_nfa(self):
 		result_nfa = NFA(2)
 		result_nfa_init_state = 1
 		result_nfa_term_state = 2
-		result_nfa.toggle_state_terminality(2)
+		result_nfa.toggle_terminality(2)
 
 		for part in self.parts:
-			part_nfa = part.make_equivalent_nfa()
+			part_nfa = part.make_nfa()
 
 			part_nfa_init_state = part_nfa.get_initial_state()
 			part_nfa_term_state = part_nfa.get_terminal_states()
@@ -736,6 +899,20 @@ class RegexSum(RegexSyntaxItem):
 				result_nfa.add_transition(state_index_shift + part_nfa_tr_start, part_nfa_tr_chr, state_index_shift + part_nfa_tr_end)
 
 		return result_nfa
+	def to_str(self, outer_priority=None):
+		result = '+'.join([part.to_str() for part in self.parts])
+		if outer_priority is not None and outer_priority > self.get_priority():
+			return '(' + result + ')'
+		else:
+			return result
+	@classmethod
+	def get_priority(self):
+		return RegexSyntaxItem.get_priority() + 1
+	def simplify(self):
+		for part in self.parts:
+			part.simplify()
+		# Delete parts, that are the same
+		#   They will produce the same to_str.
 class RegexProd(RegexSyntaxItem):
 	# part1 part2 ... partN
 	# regex abcd, for example
@@ -748,8 +925,8 @@ class RegexProd(RegexSyntaxItem):
 		for part in self.parts:
 			result += part.format_as_text_tree(indent + 1)
 		return result
-	def make_equivalent_nfa(self):
-		result_nfa = self.parts[0].make_equivalent_nfa()
+	def make_nfa(self):
+		result_nfa = self.parts[0].make_nfa()
 		result_nfa_term_state = result_nfa.get_terminal_states()
 		assert len(result_nfa_term_state) == 1
 		result_nfa_term_state = result_nfa_term_state[0]
@@ -757,7 +934,7 @@ class RegexProd(RegexSyntaxItem):
 		for part_index in range(1, len(self.parts)):
 			part = self.parts[part_index]
 
-			part_nfa = part.make_equivalent_nfa()
+			part_nfa = part.make_nfa()
 
 			part_nfa_init_state = part_nfa.get_initial_state()
 			part_nfa_term_state = part_nfa.get_terminal_states()
@@ -767,14 +944,26 @@ class RegexProd(RegexSyntaxItem):
 			state_index_shift = result_nfa.get_num_states()
 			result_nfa.add_states(part_nfa.get_num_states())
 			result_nfa.add_transition(result_nfa_term_state, '', state_index_shift + part_nfa_init_state)
-			result_nfa.toggle_state_terminality(result_nfa_term_state)
-			result_nfa.toggle_state_terminality(state_index_shift + part_nfa_term_state)
+			result_nfa.toggle_terminality(result_nfa_term_state)
+			result_nfa.toggle_terminality(state_index_shift + part_nfa_term_state)
 			result_nfa_term_state = state_index_shift + part_nfa_term_state # We have a new terminal state
 
 			for part_nfa_tr_start, part_nfa_tr_chr, part_nfa_tr_end in part_nfa.iterate_transitions():
 				result_nfa.add_transition(state_index_shift + part_nfa_tr_start, part_nfa_tr_chr, state_index_shift + part_nfa_tr_end)
 
 		return result_nfa
+	def to_str(self, outer_priority=None):
+		result = ''.join(map(lambda p: p.to_str(), self.parts))
+		if outer_priority is not None and outer_priority > self.get_priority():
+			return '(' + result + ')'
+		return result
+	@classmethod
+	def get_priority(self):
+		return RegexSum.get_priority() + 1
+	def simplify(self):
+		for part in self.parts:
+			part.simplify()
+		# Could have expanded all brackets.
 class RegexRep(RegexSyntaxItem):
 	# group *
 	# For example, a*, corresponds to language {eps, a, aa, ...}
@@ -784,72 +973,81 @@ class RegexRep(RegexSyntaxItem):
 		result = ' ' * indent + "RegexRep" + '\n'
 		result += self.repeated_part.format_as_text_tree(indent + 1)
 		return result
-	def make_equivalent_nfa(self):
-		rep_nfa = self.repeated_part.make_equivalent_nfa()
+	def make_nfa(self):
+		rep_nfa = self.repeated_part.make_nfa()
 
 		rep_nfa_init_state = rep_nfa.get_initial_state()
 		rep_nfa_term_state = rep_nfa.get_terminal_states()
 		assert len(rep_nfa_term_state) == 1
 		rep_nfa_term_state = rep_nfa_term_state[0]
 
-		rep_nfa.toggle_state_terminality(rep_nfa_term_state)
+		rep_nfa.toggle_terminality(rep_nfa_term_state)
 		# Empty character (aka empty word, eps) transition
 		rep_nfa.add_transition(rep_nfa_term_state, "", rep_nfa_init_state)
 		# Old initial state is now terminal
-		rep_nfa.toggle_state_terminality(rep_nfa_init_state)
+		rep_nfa.toggle_terminality(rep_nfa_init_state)
 
 		return rep_nfa
+	def to_str(self, outer_priority=None):
+		# Character can't store reps, so we're fine.
+		repeated_part_str = self.repeated_part.to_str()
+		if len(repeated_part_str) > 1:
+			repeated_part_str = '(' + repeated_part_str + ')'
+		return repeated_part_str + '*'
+	@classmethod
+	def get_priority(self):
+		return RegexProd.get_priority() + 1
+	def simplify(self):
+		self.repeated_part.simplify()
+		if isinstance(self.repeated_part, RegexRep):
+			self.repeated_part = self.repeated_part.repeated_part
 class RegexImmChr(RegexSyntaxItem):
 	# Immediate character
-	def __init__(self, character):
-		if character in ('*', '(', ')', '+', '1'):
+	def __init__(self, character, empty_word_chr):
+		if character in ('*', '(', ')', '+'):
 			raise Exception("Invalid character")
 		self.character = character
+		self.empty_word_chr = empty_word_chr
 	def format_as_text_tree(self, indent=0):
-		result = ' ' * indent + "RegexImmChr '%c'" % self.character + '\n'
+		result = ' ' * indent + "RegexImmChr '%c'%s" % (self.character, ('', "EmptyWord")[int(self.character == self.empty_word_chr)]) + '\n'
 		return result
-	def make_equivalent_nfa(self):
+	def make_nfa(self):
 		result_nfa = NFA(2)
-		result_nfa.add_transition(1, self.character, 2)
-		result_nfa.toggle_state_terminality(2)
+		if self.character == self.empty_word_chr:
+			result_nfa.add_transition(1, '', 2)
+		else:
+			result_nfa.add_transition(1, self.character, 2)
+		result_nfa.toggle_terminality(2)
 		return result_nfa
-class RegexEmptyWordChr(RegexSyntaxItem):
-	# character 1 in regex
-	def __init__(self, character):
-		if character in ('*', '(', ')', '+', '1'):
-			raise Exception("Invalid character")
-		self.character = character
-	def format_as_text_tree(self, indent=0):
-		result = ' ' * indent + "RegexEmptyWordChr" + '\n'
-		return result
-	def make_equivalent_nfa(self):
-		result_nfa = NFA(2)
-		result_nfa.add_transition(1, '', 2)
-		result_nfa.toggle_state_terminality(2)
-		return result_nfa
-
-
+	def to_str(self, outer_priority=None):
+		return self.character
+	@classmethod
+	def get_priority(self):
+		return RegexRep.get_priority() + 1
+	def simplify(self):
+		# Nothing to do, character is already simple.
+		pass
 
 class InvalidRegexSyntaxException(Exception):
 	def __init__(self, scanner):
 		super().__init__("invalid syntax, position %d" % scanner.get_pos())
 
-def parse_regex_chr_rep_opt(scanner):
+def parse_regex_chr_rep_opt(scanner, empty_word_chr):
 	try:
-		result = RegexImmChr(scanner.read())
+		result = RegexImmChr(scanner.read(), empty_word_chr)
 	except:
-		raise InvalidRegexSyntaxException(scanner)
+		raise InvalidRegexSyntaxException(scanner, empty_word_chr)
 	if scanner.peek() == "*":
 		scanner.read()
 		result = RegexRep(result)
 	return result
 
-def parse_regex_prod(scanner):
+def parse_regex_prod(scanner, empty_word_chr):
 	result = None
 	if scanner.peek() == '(':
-		result = parse_regex_group_rep_opt(scanner)
+		result = parse_regex_group_rep_opt(scanner, empty_word_chr)
 	else:
-		result = parse_regex_chr_rep_opt(scanner)
+		result = parse_regex_chr_rep_opt(scanner, empty_word_chr)
 	parts = []
 	# Is alphabet chr or is a open paren
 	#   so just not a special char or an open paren
@@ -858,41 +1056,41 @@ def parse_regex_prod(scanner):
 		scanner.peek() == '('
 	):
 		if scanner.peek() == '(':
-			parts.append(parse_regex_group_rep_opt(scanner))
+			parts.append(parse_regex_group_rep_opt(scanner, empty_word_chr))
 		else:
-			parts.append(parse_regex_chr_rep_opt(scanner))
+			parts.append(parse_regex_chr_rep_opt(scanner, empty_word_chr))
 	if parts:
 		result = RegexProd(result, *parts)
 	return result
 
-def parse_regex_sum(scanner):
-	result = parse_regex_prod(scanner)
+def parse_regex_sum(scanner, empty_word_chr):
+	result = parse_regex_prod(scanner, empty_word_chr)
 	parts = []
 	while scanner.peek() == '+':
 		scanner.read()
-		parts.append(parse_regex_prod(scanner))
+		parts.append(parse_regex_prod(scanner, empty_word_chr))
 	if parts:
 		result = RegexSum(result, *parts)
 	return result
 
-def parse_regex_group(scanner):
+def parse_regex_group(scanner, empty_word_chr):
 	result = None
 	if scanner.read() != '(':
 		raise InvalidRegexSyntaxException(scanner)
-	result = parse_regex_sum(scanner)
+	result = parse_regex_sum(scanner, empty_word_chr)
 	if scanner.read() != ')':
 		raise InvalidRegexSyntaxException(scanner)
 	return result
 
-def parse_regex_group_rep_opt(scanner):
-	result = parse_regex_group(scanner)
+def parse_regex_group_rep_opt(scanner, empty_word_chr):
+	result = parse_regex_group(scanner, empty_word_chr)
 	if scanner.peek() == '*':
 		scanner.read()
 		result = RegexRep(result)
 	return result
 
-def parse_regex(scanner):
-	result = parse_regex_sum(scanner)
+def parse_regex(scanner, empty_word_chr):
+	result = parse_regex_sum(scanner, empty_word_chr)
 	if scanner.peek() is not None:
 		raise InvalidRegexSyntaxException(scanner)
 	return result
@@ -904,33 +1102,26 @@ class Regex:
 	#   is not excluded, ambiguity in regex_str parsing arises.
 	#   If '(' is a character or a control character (special),
 	#   that groups items after it, we don't know.
-	def __init__(self, regex_str, alphabet=None):
-		special_chrs = ('*', '+', '(', ')')
-		if alphabet is not None:
-			for special_chr in special_chrs:
-				if special_chr in alphabet:
-					raise Exception("Found a forbidden alphabet character")
-		regex_chrs = list(filter(lambda char: char not in special_chrs, regex_str))
-		print(regex_chrs)
-		if alphabet is None:
-			alphabet = regex_chrs
-		else:
-			for regex_chr in regex_chrs:
-				if regex_chr not in alphabet:
-					raise Exception("Too small alphabet, regular expression wants characters outside of it")
-		self.parse(regex_str)
+	def __init__(self, regex_str, empty_word_chr='1'):
+		self.parse(regex_str, empty_word_chr)
 
-	def parse(self, regex_str):
+	def to_str(self):
+		return self.ast.to_str()
+
+	def parse(self, regex_str, empty_word_chr):
 		scanner = Scanner(regex_str)
-		self.ast = parse_regex(scanner)
+		self.ast = parse_regex(scanner, empty_word_chr)
 
 	# Produces equivalent eps-nfa
 	#   with exactly one starting
 	#   state and one terminal state.
-	def make_equivalent_nfa(self):
+	def make_nfa(self):
 		# Constructing nfa by following regexp
 		#   resursive syntax definition
-		return self.ast.make_equivalent_nfa();
+		return self.ast.make_nfa();
 
 	def print_ast(self):
 		print(self.ast.format_as_text_tree())
+
+	def simplify(self):
+		self.ast.simplify()
