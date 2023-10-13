@@ -29,8 +29,8 @@ for character in "abacad":
 assert not dfa.accepts()
 dfa.reset()
 
-dfa.convert_to_full_dfa("abc")
-min_dfa = dfa.make_min_fdfa()
+dfa.make_cdfa("abc")
+min_dfa = dfa.make_min_cdfa()
 
 for character in "abaca":
 	min_dfa.transit(character)
@@ -59,8 +59,8 @@ dfa.transit('o')
 fa.Regex("(a+b)*(b+b)*baca*")
 
 dfa = fa.DFA(1)
-dfa.convert_to_full_dfa('a')
-dfa = dfa.make_min_fdfa()
+dfa = dfa.make_cdfa('a')
+dfa = dfa.make_min_cdfa()
 
 dfa = fa.DFA(2, 1)
 dfa.add_transition(1, 'a', 2)

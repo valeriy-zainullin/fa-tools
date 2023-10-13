@@ -316,7 +316,7 @@ class DFA(FA):
 		return result
 
 
-	def convert_to_full_dfa(self, alphabet):
+	def make_cdfa(self, alphabet):
 		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 		has_not_full_states = False
 		transitions_to_add = set()
@@ -341,7 +341,7 @@ class DFA(FA):
 	#      Understood something from this source, but still not quite everything.
 	#   http://www-igm.univ-mlv.fr/~berstel/Exposes/2009-06-08MinimisationLiege.pdf
 	#      Page 26 saves the day.
-	def make_min_fdfa(self):
+	def make_min_cdfa(self):
 		assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 
 		# All unreachable states are equiavalent between each
