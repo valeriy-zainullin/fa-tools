@@ -30,7 +30,7 @@ assert not dfa.accepts()
 dfa.reset()
 
 cdfa = dfa.make_cdfa("abc")
-min_cdfa = cdfa.make_min_cdfa()
+min_cdfa = cdfa.make_minimized_cdfa()
 
 for character in "abaca":
 	min_cdfa.transit(character)
@@ -60,7 +60,7 @@ fa.Regex("(a+b)*(b+b)*baca*")
 
 dfa = fa.DFA(1)
 cdfa = dfa.make_cdfa('a')
-min_cdfa = cdfa.make_min_cdfa()
+min_cdfa = cdfa.make_minimized_cdfa()
 
 dfa = fa.DFA(2, 1)
 dfa.add_transition(1, 'a', 2)

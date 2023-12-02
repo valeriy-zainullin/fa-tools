@@ -340,7 +340,7 @@ class DFA(FA):
     #      Understood something from this source, but still not quite everything.
     #   http://www-igm.univ-mlv.fr/~berstel/Exposes/2009-06-08MinimisationLiege.pdf
     #      Page 26 saves the day.
-    def make_min_cdfa(self):
+    def make_minimized_cdfa(self):
         assert not self.force_multichar_labels, "method is not allowed in multichar mode"
 
         # All unreachable states are equiavalent between each
@@ -446,8 +446,8 @@ class DFA(FA):
                 dst = [[0 for _ in range(len(alphabet))] for _ in range(len(eq_class_as_list))]
                 for item_index, state in enumerate(eq_class_as_list):
                     for char_index, char in enumerate(alphabet):
-                        assert len(self.transitions[state][char]) != 0, "Not a complete DFA"
-                        assert len(self.transitions[state][char]) <= 1, "Not a DFA"
+                        assert len(self.transitions[state].get(char, [])) != 0, "Not a complete DFA"
+                        assert len(self.transitions[state].get(char, [])) <= 1, "Not a DFA"
                         tr_end_state = min(self.transitions[state][char])
                         dst[item_index][char_index] = state_to_eq_class[tr_end_state]
                 # set(map(tuple, dst)) converts to a set of tuples (vector of eq classes
