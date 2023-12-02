@@ -29,20 +29,20 @@ for character in "abacad":
 assert not dfa.accepts()
 dfa.reset()
 
-dfa.make_cdfa("abc")
-min_dfa = dfa.make_min_cdfa()
+cdfa = dfa.make_cdfa("abc")
+min_cdfa = cdfa.make_min_cdfa()
 
 for character in "abaca":
-	min_dfa.transit(character)
-assert min_dfa.accepts()
-min_dfa.reset()
+	min_cdfa.transit(character)
+assert min_cdfa.accepts()
+min_cdfa.reset()
 
 for character in "abacad":
-	dfa.transit(character)
-assert not dfa.accepts()
-dfa.reset()
+	cdfa.transit(character)
+assert not cdfa.accepts()
+cdfa.reset()
 
-dfa.convert_to_graphviz()
+cdfa.convert_to_graphviz()
 nfa.convert_to_graphviz()
 
 dfa.transit('a')
@@ -59,8 +59,8 @@ dfa.transit('o')
 fa.Regex("(a+b)*(b+b)*baca*")
 
 dfa = fa.DFA(1)
-dfa = dfa.make_cdfa('a')
-dfa = dfa.make_min_cdfa()
+cdfa = dfa.make_cdfa('a')
+min_cdfa = cdfa.make_min_cdfa()
 
 dfa = fa.DFA(2, 1)
 dfa.add_transition(1, 'a', 2)
@@ -69,16 +69,16 @@ dfa.add_transition(2, 'b', 1)
 dfa.toggle_terminality(2)
 assert dfa.count_transitions(None, None, 2) == 1
 
-nfa = fa.NFA(2);
+nfa = fa.NFA(2)
 nfa.add_transition(1, '', 2)
 assert "&epsilon;" in nfa.convert_to_graphviz()
 
 nfa = fa.Regex("aba").make_nfa()
 nfa.elim_eps_transitions()
 dfa = nfa.make_dfa()
-fdfa = dfa.make_full_dfa("ab")
-print(fdfa.make_regex_str())
-regex = fa.Regex(fdfa.make_regex_str())
+cdfa = dfa.make_cdfa("ab")
+print(cdfa.make_regex_str())
+regex = fa.Regex(cdfa.make_regex_str())
 regex.simplify()
 regex_str = regex.to_str()
 assert regex_str == "aba", regex_str
